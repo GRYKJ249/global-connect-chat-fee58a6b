@@ -44,7 +44,7 @@ function ChatLayout() {
   const [open, setOpen] = useState(false);
   const params = useParams({ strict: false }) as { threadId?: string };
 
-  const { profile, username, displayName, avatarUrl } = useProfile();
+  const { username, displayName, avatarUrl } = useProfile();
 
   const { data: threads } = useQuery({
     queryKey: ["chat-threads", user?.id],
@@ -110,6 +110,7 @@ function ChatLayout() {
               <Link to="/dashboard" className="max-w-full truncate text-sm font-semibold">
                 {name || t("Your account", "حسابك")}
               </Link>
+              {username && <span dir="ltr" className="text-xs text-muted-foreground">@{username}</span>}
               <button type="button" onClick={signOut} className="btn-ghost !py-1.5 text-xs">
                 <LogOut className="h-3.5 w-3.5" />
                 {t("Log out", "تسجيل الخروج")}

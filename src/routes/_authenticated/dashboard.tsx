@@ -1,11 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { BadgeCheck, Code2, Cpu, ImageIcon, Loader2, Save, ShieldCheck, Sparkles } from "lucide-react";
+import { BadgeCheck, Camera, Code2, Cpu, ImageIcon, Loader2, Save, ShieldCheck, Sparkles } from "lucide-react";
 import { OperaLogoMark } from "@/components/brand/OperaLogoMark";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useProfile } from "@/hooks/useProfile";
+import { UserAvatar } from "@/components/profile/UserAvatar";
+import { uploadAvatar } from "@/lib/avatar";
 import { useLang } from "@/lib/i18n";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -30,19 +33,33 @@ function Dashboard() {
   const [username, setUsername] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const { data: profile, isLoading } = useQuery({
-    queryKey: ["profile", user?.id],
-    enabled: !!user,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id, username, display_name, avatar_url, tokens_used, created_at")
-        .eq("id", user!.id)
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-  });
+  const { profile, avatarUrl, isLoading, refetch } = useProfile();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const changeAvatar = async (file: File) => {
+    setSaving(true);
+    const result = await uploadAvatar(file);
+    if (!result.ok) {
+      setSaving(false);
+      toast.error(
+        result.error === "too_large"
+          ? t("Pick an image under 5 MB.", "اختر صورة أقل من 5 ميجا.")
+          : result.error === "not_image"
+            ? t("Pick an image file.", "اختر ملف صورة.")
+            : (result.message ?? t("Upload failed.", "فشل رفع الصورة.")),
+      );
+      return;
+    }
+    const { error } = await supabase.from("profiles").update({ avatar_url: result.path }).eq("id", user!.id);
+    setSaving(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success(t("Picture updated.", "تم تحديث الصورة."));
+    void refetch();
+    void queryClient.invalidateQueries({ queryKey: ["profile", user!.id] });
+  };
 
   useEffect(() => {
     if (profile) {
@@ -88,11 +105,25 @@ function Dashboard() {
 
         <div className="glass-strong mt-8 rounded-3xl p-8">
           <div className="flex flex-wrap items-center gap-4">
-            {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt="" className="h-16 w-16 rounded-full object-cover ring-1 ring-glass-border" />
-            ) : (
-              <OperaLogoMark className="h-16 w-16" label="Opera AI" />
-            )}
+            <div className="flex flex-col items-center gap-1.5">
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="relative">
+                <UserAvatar src={avatarUrl} name={profile?.display_name ?? ""} className="h-16 w-16 text-lg" />
+                <span className="absolute -bottom-1 -end-1 rounded-full bg-primary p-1.5 text-primary-foreground">
+                  <Camera className="h-3 w-3" />
+                </span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) void changeAvatar(file);
+                }}
+              />
+            </div>
             <div className="min-w-0">
               <h1 className="font-display text-2xl font-bold">
                 {t("Welcome", "أهلاً")}, {profile?.display_name || user?.email}
