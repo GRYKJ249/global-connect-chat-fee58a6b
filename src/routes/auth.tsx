@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Loader2,
   Phone,
+  RefreshCw,
   Search,
   ShieldCheck,
   UserRound,
@@ -20,6 +21,9 @@ import { useAuth } from "@/hooks/useAuth";
 import { useLang } from "@/lib/i18n";
 import { COUNTRIES, DEFAULT_COUNTRY, type Country } from "@/lib/countries";
 import { requestPhoneCode, verifyPhoneCode } from "@/lib/auth-otp.functions";
+import { suggestUsername, checkUsername } from "@/lib/username.functions";
+import { isPlaceholderUsername } from "@/hooks/useProfile";
+import { uploadAvatar } from "@/lib/avatar";
 
 export const Route = createFileRoute("/auth")({
   ssr: false,
@@ -135,6 +139,8 @@ function AuthPage() {
   const navigate = useNavigate();
   const sendCodeFn = useServerFn(requestPhoneCode);
   const verifyCodeFn = useServerFn(verifyPhoneCode);
+  const suggestUsernameFn = useServerFn(suggestUsername);
+  const checkUsernameFn = useServerFn(checkUsername);
 
   const [step, setStep] = useState<Step>("phone");
   const [country, setCountry] = useState<Country>(DEFAULT_COUNTRY);
@@ -147,6 +153,8 @@ function AuthPage() {
   const [avatarPath, setAvatarPath] = useState<string | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [usernameTouched, setUsernameTouched] = useState(false);
+  const [usernameState, setUsernameState] = useState<"idle" | "checking" | "free" | "taken" | "invalid">("idle");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Already signed in: finish the profile if it is incomplete, otherwise go to chat.
@@ -158,11 +166,12 @@ function AuthPage() {
         .select("username, display_name, avatar_url")
         .eq("id", user.id)
         .maybeSingle();
-      if (data?.username) {
+      if (!isPlaceholderUsername(data?.username)) {
         navigate({ to: "/chat", replace: true });
         return;
       }
-      setDisplayName(data?.display_name ?? "");
+      const existingName = data?.display_name ?? "";
+      setDisplayName(/^\d+$/.test(existingName) ? "" : existingName);
       setStep("profile");
     })();
   }, [loading, user, navigate]);
@@ -236,33 +245,64 @@ function AuthPage() {
   };
 
   const pickAvatar = async (file: File) => {
-    if (!file.type.startsWith("image/")) {
-      toast.error(t("Pick an image file.", "اختر ملف صورة."));
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error(t("Pick an image under 5 MB.", "اختر صورة أقل من 5 ميجا."));
-      return;
-    }
-    const { data: current } = await supabase.auth.getUser();
-    if (!current.user) return;
-
     setBusy(true);
-    const extension = file.name.split(".").pop()?.toLowerCase() ?? "jpg";
-    const path = `${current.user.id}/avatar-${Date.now()}.${extension}`;
-    const { error } = await supabase.storage
-      .from("avatars")
-      .upload(path, file, { upsert: true, contentType: file.type });
-    if (error) {
-      setBusy(false);
-      toast.error(error.message);
+    const result = await uploadAvatar(file);
+    setBusy(false);
+    if (!result.ok) {
+      toast.error(
+        result.error === "too_large"
+          ? t("Pick an image under 5 MB.", "اختر صورة أقل من 5 ميجا.")
+          : result.error === "not_image"
+            ? t("Pick an image file.", "اختر ملف صورة.")
+            : (result.message ?? t("Upload failed.", "فشل رفع الصورة.")),
+      );
       return;
     }
-    const { data: signed } = await supabase.storage.from("avatars").createSignedUrl(path, 60 * 60);
-    setAvatarPath(path);
-    setAvatarPreview(signed?.signedUrl ?? null);
-    setBusy(false);
+    setAvatarPath(result.path);
+    setAvatarPreview(result.url);
   };
+
+  // Suggest a free username built from the name the user typed.
+  const makeSuggestion = async (name: string, manual = false) => {
+    const source = name.trim();
+    if (!source) return;
+    try {
+      const result = await suggestUsernameFn({ data: { name: source } });
+      setUsername(result.username);
+      setUsernameState("free");
+      if (manual) setUsernameTouched(false);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  // Auto-fill the username from the name until the user edits it themselves.
+  useEffect(() => {
+    if (step !== "profile" || usernameTouched) return;
+    const name = displayName.trim();
+    if (!name) return;
+    const timer = setTimeout(() => void makeSuggestion(name), 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayName, step, usernameTouched]);
+
+  // Live availability check for a username the user typed.
+  useEffect(() => {
+    if (!usernameTouched) return;
+    const handle = username.trim().replace(/^@/, "").toLowerCase();
+    if (!handle) {
+      setUsernameState("idle");
+      return;
+    }
+    setUsernameState("checking");
+    const timer = setTimeout(() => {
+      void checkUsernameFn({ data: { username: handle } })
+        .then((result) => setUsernameState(result.available ? "free" : result.ok ? "taken" : "invalid"))
+        .catch(() => setUsernameState("idle"));
+    }, 450);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username, usernameTouched]);
 
   const saveProfile = async () => {
     const handle = username.trim().replace(/^@/, "").toLowerCase();
@@ -478,13 +518,35 @@ function AuthPage() {
               <span className="text-sm text-muted-foreground">@</span>
               <input
                 value={username}
-                onChange={(event) => setUsername(event.target.value)}
+                onChange={(event) => {
+                  setUsernameTouched(true);
+                  setUsername(event.target.value.replace(/\s+/g, "").toLowerCase());
+                }}
                 dir="ltr"
                 maxLength={24}
                 placeholder="username"
                 className="flex-1 bg-transparent text-sm outline-none"
               />
+              <button
+                type="button"
+                title={t("Suggest another", "اقترح غيره")}
+                onClick={() => void makeSuggestion(displayName, true)}
+                className="text-muted-foreground transition hover:text-primary"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
             </label>
+            <p className="-mt-2 px-1 text-xs text-muted-foreground">
+              {usernameState === "checking"
+                ? t("Checking…", "جاري التحقق…")
+                : usernameState === "taken"
+                  ? t("That username is taken.", "اسم المستخدم محجوز.")
+                  : usernameState === "invalid"
+                    ? t("Use 3-24 letters, numbers, dots or underscores.", "من 3 إلى 24 حرف أو رقم أو نقطة أو شرطة سفلية.")
+                    : usernameState === "free"
+                      ? t("This username is available.", "اسم المستخدم متاح.")
+                      : t("We suggest one from your name — you can change it.", "بنقترح ليك واحد من اسمك — وتقدر تغيّره.")}
+            </p>
 
             <button type="submit" disabled={busy} className="btn-hero w-full justify-center !py-2.5 text-sm">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
