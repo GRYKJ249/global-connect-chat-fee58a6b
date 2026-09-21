@@ -17,6 +17,8 @@ import {
 import { OperaLogoMark } from "@/components/brand/OperaLogoMark";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useProfile } from "@/hooks/useProfile";
+import { UserAvatar } from "@/components/profile/UserAvatar";
 import { useLang } from "@/lib/i18n";
 
 export const Route = createFileRoute("/chat")({
@@ -34,11 +36,6 @@ export const Route = createFileRoute("/chat")({
   component: ChatLayout,
 });
 
-function initialsOf(name: string) {
-  const parts = name.trim().split(/\s+/).slice(0, 2);
-  return parts.map((part) => part[0]?.toUpperCase() ?? "").join("") || "?";
-}
-
 function ChatLayout() {
   const { t, lang } = useLang();
   const { user } = useAuth();
@@ -47,19 +44,7 @@ function ChatLayout() {
   const [open, setOpen] = useState(false);
   const params = useParams({ strict: false }) as { threadId?: string };
 
-  const { data: profile } = useQuery({
-    queryKey: ["profile", user?.id],
-    enabled: !!user,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("display_name, username, avatar_url")
-        .eq("id", user!.id)
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-  });
+  const { profile, username, displayName, avatarUrl } = useProfile();
 
   const { data: threads } = useQuery({
     queryKey: ["chat-threads", user?.id],
@@ -87,7 +72,7 @@ function ChatLayout() {
     navigate({ to: "/chat" });
   };
 
-  const name = profile?.display_name || profile?.username || "";
+  const name = displayName || username || "";
 
   return (
     <div dir={lang === "ar" ? "rtl" : "ltr"} className="flex h-screen overflow-hidden">
@@ -119,13 +104,7 @@ function ChatLayout() {
 
         {/* Profile block */}
         <div className="flex flex-col items-center gap-2 px-4 pb-4">
-          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-full border border-glass-border bg-primary/15 font-display text-lg font-bold text-primary">
-            {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt="" className="h-full w-full object-cover" />
-            ) : (
-              initialsOf(name)
-            )}
-          </div>
+          <UserAvatar src={avatarUrl} name={name} className="h-16 w-16 text-lg" />
           {user ? (
             <>
               <Link to="/dashboard" className="max-w-full truncate text-sm font-semibold">
